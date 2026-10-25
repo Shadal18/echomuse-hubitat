@@ -1,0 +1,17 @@
+# Private configuration
+hubitat.json
+.env
+.env.*
+!.env.example
+
+# Downloaded speech models
+whisper-data/
+piper-data/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs and backup files
+*.log
+*.bak

@@ -1,0 +1,4 @@
+{
+  "base_url": "http://HUBITAT-IP/apps/api/APP-ID",
+  "access_token": "REPLACE_WITH_YOUR_TOKEN"
+}

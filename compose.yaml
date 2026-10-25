@@ -1,0 +1,36 @@
+services:
+  whisper:
+    image: rhasspy/wyoming-whisper:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:10300:10300"
+    volumes:
+      - ./whisper-data:/data
+    command: ["--model", "base-int8", "--language", "en"]
+
+  piper:
+    image: rhasspy/wyoming-piper:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:10200:10200"
+    volumes:
+      - ./piper-data:/data
+    command: ["--voice", "en_US-lessac-medium"]
+
+  bridge:
+    build:
+      context: .
+      dockerfile: voice-runtime/Dockerfile
+    image: echomuse-voice-bridge:local
+    restart: unless-stopped
+    network_mode: host
+    init: true
+    volumes:
+      - ./:/bridge:ro
+    entrypoint: ["python", "-u"]
+    command: ["/bridge/bridge/voice_bridge.py"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
