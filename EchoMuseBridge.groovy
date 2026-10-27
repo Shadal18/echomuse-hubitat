@@ -1,5 +1,5 @@
 /*
- * EchoMuse Bridge v0.4.0 - development draft
+ * EchoMuse Bridge v0.5.0 - development draft
  * Room-aware LLM control: on, off, and brightness.
  * Only selected devices can be controlled.
  */
@@ -61,16 +61,37 @@ def mainPage() {
         section("LLM server") {
             input "llmBaseUrl", "text",
                 title: "OpenAI-compatible API base URL",
-                description: "Enter a URL reachable from your Hubitat hub, including the port and /v1",
+                description: "API base URL reachable from Hubitat, including /v1",
                 required: true
 
-        input "llmModel", "text",
-            title: "Model ID",
-            description: "Exact model ID accepted by your LLM server, e.g. qwen3-8b",
-            required: true
+            input "llmModel", "text",
+                title: "Model ID",
+                description: "Exact model ID accepted by your server", required: true
 
             input "llmApiKey", "password",
                 title: "API key (optional)", required: false
+        }
+
+        section("Speaker announcements") {
+            input "announcementsEnabled", "bool",
+                title: "Enable EchoMuse speaker announcements",
+                defaultValue: false, required: true, submitOnChange: true
+            if (settings.announcementsEnabled == true) {
+                input "announcementBaseUrl", "text",
+                    title: "Python bridge URL",
+                    description: "Example: http://CONTAINER-107-IP:18083 (no /announce)",
+                    required: true
+                input "announcementToken", "password",
+                    title: "Announcement token from hubitat.json",
+                    required: true
+                input "announcementSpeakerName", "text",
+                    title: "Speaker device name",
+                    defaultValue: "EchoMuse Speaker", required: true
+                paragraph "Save with Done to create/update the speaker. Install the EchoMuse Speaker driver first. Announcements play even when device control is in dry-run mode."
+                input "testAnnouncement", "button", title: "Test saved announcement settings"
+                input "checkAnnouncementBridge", "button", title: "Check saved bridge settings"
+                paragraph "Test buttons use saved settings. Playback results are in the Python bridge logs; an accepted request is not proof of playback."
+            }
         }
 
         section("Bridge connection - keep token private") {
@@ -96,6 +117,7 @@ void initialize() {
             log.warn "EchoMuse Bridge: enable OAuth in Apps Code."
         }
     }
+    ensureAnnouncementSpeaker()
 }
 
 private List selectedDevices() {
@@ -131,7 +153,7 @@ def healthEndpoint() {
     return render(
         status: 200, contentType: "application/json",
         data: JsonOutput.toJson([
-            ok: true, version: "0.4.0",
+            ok: true, version: "0.5.0",
             dryRun: settings.allowControl != true,
             interpreter: "llm",
             multiDevice: true,
@@ -510,4 +532,162 @@ ${JsonOutput.toJson(catalog)}
     ]
     result.putAll(details)
     return responseBody(200, result)
+}
+
+// Speaker announcements use the same parent app, with a lightweight child driver.
+private String announcementDni() {
+    return "echomuse-speaker-${app.id}"
+}
+
+private def announcementSpeaker() {
+    return getChildDevice(announcementDni())
+}
+
+private String announcementUrl() {
+    String value = (settings.announcementBaseUrl ?: "").toString().trim().replaceAll(/\/+$/, "")
+    try {
+        def parsed = new java.net.URI(value)
+        if (!(parsed.scheme in ["http", "https"]) || !parsed.host ||
+            parsed.userInfo || parsed.query || parsed.fragment ||
+            (parsed.path && parsed.path != "/")) {
+            return null
+        }
+        return value
+    } catch (Exception ignored) {
+        return null
+    }
+}
+
+private boolean announcementConfigured() {
+    return settings.announcementsEnabled == true && announcementUrl() &&
+        (settings.announcementToken ?: "").toString().trim()
+}
+
+private void ensureAnnouncementSpeaker() {
+    def child = announcementSpeaker()
+    if (settings.announcementsEnabled != true) {
+        if (child) child.setBridgeStatus("disabled")
+        return
+    }
+    if (!announcementConfigured()) {
+        log.warn "EchoMuse: configure the bridge base URL and announcement token."
+        if (child) child.setBridgeStatus("notConfigured")
+        return
+    }
+    String speakerName = (settings.announcementSpeakerName ?: "EchoMuse Speaker").toString()
+    try {
+        if (!child) {
+            child = addChildDevice("echomuse.community", "EchoMuse Speaker", announcementDni(), [
+                name: "EchoMuse Speaker", label: speakerName, isComponent: true
+            ])
+        } else {
+            child.setLabel(speakerName)
+        }
+        child.setBridgeStatus("unknown")
+    } catch (Exception ignored) {
+        log.error "EchoMuse: could not create/update the speaker. Install the EchoMuse Speaker driver under Drivers Code, then save this app again."
+    }
+}
+
+void appButtonHandler(String buttonName) {
+    if (buttonName == "testAnnouncement") {
+        ensureAnnouncementSpeaker()
+        sendSpeakerAnnouncement(announcementDni(), "This is a test announcement from Hubitat.")
+    } else if (buttonName == "checkAnnouncementBridge") {
+        ensureAnnouncementSpeaker()
+        refreshSpeaker(announcementDni())
+    }
+}
+
+void sendSpeakerAnnouncement(String dni, String text) {
+    if (dni != announcementDni()) return
+    def child = announcementSpeaker()
+    if (!child) return
+    if (!announcementConfigured()) {
+        child.setAnnouncementState("rejected", "Announcements disabled or not configured", "")
+        return
+    }
+    String message = (text ?: "").trim()
+    if (!message || message.length() > 240) {
+        child.setAnnouncementState("rejected", "Use 1 to 240 characters", "")
+        return
+    }
+    child.setAnnouncementState("submitting", "", "")
+    try {
+        asynchttpPost("announcementResponse", [
+            uri: "${announcementUrl()}/announce",
+            headers: [Authorization: "Bearer ${(settings.announcementToken ?: '').toString().trim()}"],
+            requestContentType: "application/json",
+            contentType: "application/json",
+            timeout: 10,
+            body: [text: message]
+        ], [dni: dni])
+    } catch (Exception ignored) {
+        child.setAnnouncementState("unknown", "Submission failed; not retried", "")
+        log.warn "EchoMuse announcement submission failed; not retried."
+    }
+}
+
+void announcementResponse(response, Map data) {
+    if (data?.dni != announcementDni()) return
+    def child = announcementSpeaker()
+    if (!child) return
+    Integer status = response?.status as Integer
+    if (status == 202) {
+        try {
+            def result = response.json
+            if (result instanceof Map && result.ok == true && result.queued == true) {
+                child.setAnnouncementState("queued", "", (result.id ?: "").toString())
+                return
+            }
+        } catch (Exception ignored) { }
+        child.setAnnouncementState("unknown", "Unrecognized response; not retried", "")
+    } else {
+        String detail
+        switch (status) {
+            case 401: detail = "Unauthorized: check announcement token"; break
+            case 400: detail = "Bridge rejected message format"; break
+            case 429: detail = "Announcement queue full"; break
+            case 503: detail = "Bridge controller unavailable"; break
+            default: detail = "HTTP ${status ?: 'unavailable'}; not retried"
+        }
+        child.setAnnouncementState("failed", detail, "")
+        log.warn "EchoMuse announcement: ${detail}."
+    }
+}
+
+void refreshSpeaker(String dni) {
+    if (dni != announcementDni()) return
+    def child = announcementSpeaker()
+    if (!child) return
+    if (!announcementConfigured()) {
+        child.setBridgeStatus("disabled")
+        return
+    }
+    try {
+        asynchttpGet("announcementHealthResponse", [
+            uri: "${announcementUrl()}/health",
+            headers: [Authorization: "Bearer ${(settings.announcementToken ?: '').toString().trim()}"],
+            contentType: "application/json", timeout: 10
+        ], [dni: dni])
+    } catch (Exception ignored) {
+        child.setBridgeStatus("unreachable")
+    }
+}
+
+void announcementHealthResponse(response, Map data) {
+    if (data?.dni != announcementDni()) return
+    def child = announcementSpeaker()
+    if (!child) return
+    if (response?.status == 401) {
+        child.setBridgeStatus("unauthorized")
+        return
+    }
+    try {
+        if (response?.status == 200 && response.json?.ok == true) {
+            child.setBridgeStatus(response.json.controllerConnected == true ? "connected" : "controllerOffline")
+            return
+        }
+    } catch (Exception ignored) { }
+    child.setBridgeStatus("unreachable")
 }

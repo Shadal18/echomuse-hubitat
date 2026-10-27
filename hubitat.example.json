@@ -1,4 +1,7 @@
 {
   "base_url": "http://HUBITAT-IP/apps/api/APP-ID",
-  "access_token": "REPLACE_WITH_YOUR_TOKEN"
+  "access_token": "YOUR_EXISTING_HUBITAT_ACCESS_TOKEN",
+  "announcement_token": "PASTE_YOUR_NEW_RANDOM_TOKEN_HERE",
+  "announcement_bind": "http://ECHOMUSE-IP",
+  "announcement_port": 18083
 }
